@@ -1,0 +1,59 @@
+# =======================================================================
+# 🔐 DATA WAREHOUSE CORE SECURITY & TOKENS
+# =======================================================================
+.env
+.env.*
+*.env
+secrets.json
+
+# =======================================================================
+# 🗄️ LOCAL DATABASES & RAW STORAGE (Do not back up multi-GB binaries)
+# =======================================================================
+databases/*.db
+databases/*.db-journal
+databases/*.db-wal
+databases/*.db-shm
+databases/*.json
+
+# If you want to explicitly keep the MSA crosswalk json map, un-comment this line:
+# !databases/msa_county_map.json
+
+# Exclude all raw data downloads (Zipped, CSVs, Text files)
+raw_datasets/
+**/*.csv
+**/*.csv.gz
+**/*.txt
+**/*.tar.gz
+**/*.zip
+
+# Clean out temporary or intermediate export folders
+databases/transitory/
+reports/
+
+# =======================================================================
+# 🐍 PYTHON / ENVS COMPILATION GATES
+# =======================================================================
+.venv/
+env/
+venv/
+ENV/
+bin/
+lib/
+include/
+share/
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# =======================================================================
+# 🧪 JUPYTER NOTEBOOK RUNTIME ARTIFACTS
+# =======================================================================
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+.local
+.cache
+.config

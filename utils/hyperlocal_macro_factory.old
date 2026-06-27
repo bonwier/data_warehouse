@@ -1,0 +1,845 @@
+import sqlite3
+import json
+import datetime
+import pandas as pd
+import numpy as np
+from pathlib import Path
+from typing import Optional, Union, List, Dict, Tuple
+
+
+class MacroFeatureEngineV2:
+    """
+    Enterprise-Grade Hyperlocal Macro Feature Factory.
+    Consumes pristine spatial-temporal keys from GeographyDaemon and extracts
+    slow-moving economic indicators from IRS SOI, BLS QCEW, and BLS LAUS warehouses.
+    Supports Automated Underwriting (AUS), Manual Policy Guidelines, and
+    Longitudinal Economic Development Cluster Analysis.
+    """
+
+    # Define our structural non-MSA governance strategy constants
+    STRATEGY_COUNTY_ONLY = "COUNTY_ONLY"
+    STRATEGY_STATE_AVERAGE = "STATE_AVERAGE"
+    STRATEGY_RAISE_EXCEPTION = "RAISE_EXCEPTION"
+
+    def __init__(
+        self, geography_daemon=None, database_dir: Optional[Union[str, Path]] = None
+    ):
+        """
+        Initializes the engine, linking it directly to the core GeographyDaemon
+        and calculating data ceilings to manage right-censored administrative lags.
+        """
+        self.geo_daemon = geography_daemon
+
+        # FIXED: .parent.parent correctly steps up from utils/ to the warehouse root
+        root_dir = Path(__file__).resolve().parent.parent
+        self.db_dir = Path(database_dir) if database_dir else root_dir / "databases"
+
+        self.irs_path = self.db_dir / "irs_county_soi.db"
+        self.qcew_path = self.db_dir / "bls_qcew_industry.db"
+        self.laus_path = self.db_dir / "bls_laus_macro.db"
+        self.msa_json_path = self.db_dir / "msa_county_map.json"
+
+        # Verify database files exist before initializing
+        for path in [self.irs_path, self.qcew_path, self.laus_path, self.msa_json_path]:
+            if not path.exists():
+                raise FileNotFoundError(
+                    f"❌ Required warehouse asset missing at: {path}"
+                )
+
+        # Load the portable O(1) MSA lookup dictionary
+        with open(self.msa_json_path, "r", encoding="utf-8") as f:
+            self.msa_map = json.load(f)
+
+        # Detect the right-censored temporal ceiling for IRS data dynamically
+        self.max_irs_year = self._detect_database_ceiling(
+            self.irs_path, "county_economics", "calendar_year"
+        )
+        print(
+            f"⚙️ Engine initialized. Detected right-censored IRS ceiling as tax year: {self.max_irs_year}"
+        )
+
+    def _detect_database_ceiling(
+        self, db_path: Path, table_name: str, year_col: str
+    ) -> int:
+        """Helper to safely inspect the absolute maximum historical record year on disk."""
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        try:
+            cursor.execute(f"SELECT MAX({year_col}) FROM {table_name};")
+            fetched = cursor.fetchone()
+            return int(fetched[0]) if fetched and fetched[0] else 2022
+        finally:
+            conn.close()
+
+    def _calculate_relative_temporal_target(self, loan_vintage_year: int) -> int:
+        """
+        Prevents lookahead bias and data gaps. Maps out the relative historical
+        offset to align asymmetric administrative data lags across cohorts.
+        """
+        # FIXED: Automated year resolution via datetime
+        current_year = datetime.datetime.now().year
+        relative_lag = current_year - self.max_irs_year
+
+        # Apply identical relative offset to the targeted historical cohort
+        target_year = int(loan_vintage_year) - relative_lag
+        return target_year
+
+    def _get_msa_components(
+        self, county_fips: str, strategy: str
+    ) -> Tuple[List[str], str]:
+        """
+        Core spatial routing engine. Ingests the JSON map and applies the
+        explicit non_msa_strategy parameter contract.
+        """
+        fips_clean = str(county_fips).strip().zfill(5)
+        county_node = self.msa_map.get(fips_clean)
+
+        if county_node and county_node.get("msa_code"):
+            return county_node["component_fips"], "TRUE_METRO"
+
+        if strategy == self.STRATEGY_COUNTY_ONLY:
+            return [fips_clean], "RURAL_COUNTY_ONLY"
+
+        elif strategy == self.STRATEGY_STATE_AVERAGE:
+            return [], "RURAL_STATE_AVERAGE"
+
+        elif strategy == self.STRATEGY_RAISE_EXCEPTION:
+            raise ValueError(
+                f"🚨 Credit Policy Exception: FIPS {fips_clean} is a rural, non-MSA territory. "
+                f"Automated processing blocked. Reroute to human credit committee."
+            )
+        else:
+            raise ValueError(f"❌ Invalid non_msa_strategy provided: {strategy}")
+
+    def compute_passive_wealth_profile(
+        self, county_fips: str, loan_vintage_year: int, non_msa_strategy: str
+    ) -> Dict[str, Union[float, str]]:
+        """
+        Extracts Passive Wealth Depth and Filer Volume Dynamics from irs_county_soi.db.
+        Dynamically aligns temporal targets and executes spatial aggregations
+        based on the mandated credit policy strategy.
+        """
+        # 1. Resolve geographic targets and spatial tracking flags
+        fips_clean = str(county_fips).strip().zfill(5)
+        component_fips, spatial_flag = self._get_msa_components(
+            fips_clean, non_msa_strategy
+        )
+
+        # 2. Calculate the historically accurate, right-censored tax year
+        target_year = self._calculate_relative_temporal_target(loan_vintage_year)
+
+        # 3. Formulate the spatial query based on the selected strategy
+        conn = sqlite3.connect(self.irs_path)
+        try:
+            if spatial_flag == "RURAL_STATE_AVERAGE":
+                # Strategy mandates state-wide aggregate fallback
+                state_prefix = fips_clean[:2] + "%"
+                query = """
+                    SELECT 
+                        SUM(wages_and_salaries) as total_wages,
+                        SUM(dividends_received) as total_dividends,
+                        SUM(interest_received) as total_interest,
+                        SUM(total_returns) as total_returns,
+                        SUM(total_exemptions) as total_exemptions
+                    FROM county_economics
+                    WHERE county_fips LIKE ? AND calendar_year = ?
+                """
+                df_current = pd.read_sql_query(
+                    query, conn, params=(state_prefix, target_year)
+                )
+
+                # Fetch 5-year historical lag for filer velocity at the state level
+                query_lag = """
+                    SELECT SUM(total_returns) as returns_lag 
+                    FROM county_economics 
+                    WHERE county_fips LIKE ? AND calendar_year = ?
+                """
+                df_lag = pd.read_sql_query(
+                    query_lag, conn, params=(state_prefix, target_year - 5)
+                )
+
+            else:
+                # Direct match for single county or true multi-state MSA components
+                placeholders = ",".join(["?"] * len(component_fips))
+                query = f"""
+                    SELECT 
+                        SUM(wages_and_salaries) as total_wages,
+                        SUM(dividends_received) as total_dividends,
+                        SUM(interest_received) as total_interest,
+                        SUM(total_returns) as total_returns,
+                        SUM(total_exemptions) as total_exemptions
+                    FROM county_economics
+                    WHERE county_fips IN ({placeholders}) AND calendar_year = ?
+                """
+                params = component_fips + [target_year]
+                df_current = pd.read_sql_query(query, conn, params=params)
+
+                # Fetch 5-year historical lag for filer velocity
+                query_lag = f"""
+                    SELECT SUM(total_returns) as returns_lag 
+                    FROM county_economics 
+                    WHERE county_fips IN ({placeholders}) AND calendar_year = ?
+                """
+                params_lag = component_fips + [target_year - 5]
+                df_lag = pd.read_sql_query(query_lag, conn, params=params_lag)
+
+        finally:
+            conn.close()
+
+        # 4. Handle edge cases where data queries return completely empty or null fields
+        if (
+            df_current.empty
+            or pd.isna(df_current["total_returns"].iloc[0])
+            or df_current["total_returns"].iloc[0] == 0
+        ):
+            return {
+                "macro_wealth_cushion": 0.0,
+                "filer_density_velocity": 0.0,
+                "household_dependency_ratio": 0.0,
+                "spatial_governance_flag": "DATA_GAP_FALLBACK",
+            }
+
+        wages = (
+            float(df_current["total_wages"].iloc[0])
+            if pd.notna(df_current["total_wages"].iloc[0])
+            else 0.0
+        )
+        dividends = (
+            float(df_current["total_dividends"].iloc[0])
+            if pd.notna(df_current["total_dividends"].iloc[0])
+            else 0.0
+        )
+        interest = (
+            float(df_current["total_interest"].iloc[0])
+            if pd.notna(df_current["total_interest"].iloc[0])
+            else 0.0
+        )
+        returns = (
+            float(df_current["total_returns"].iloc[0])
+            if pd.notna(df_current["total_returns"].iloc[0])
+            else 0.0
+        )
+        exemptions = (
+            float(df_current["total_exemptions"].iloc[0])
+            if pd.notna(df_current["total_exemptions"].iloc[0])
+            else 0.0
+        )
+
+        returns_lag = (
+            float(df_lag["returns_lag"].iloc[0])
+            if not df_lag.empty and pd.notna(df_lag["returns_lag"].iloc[0])
+            else returns
+        )
+
+        # 5. Compute pristine, population-agnostic economic metrics
+        # Metric A: Asset Density Ratio (The Labor-Anchored Cushion)
+        asset_density_ratio = (dividends + interest) / wages if wages > 0 else 0.0
+
+        # Metric B: Filer Density Velocity (The Growth/Migration Engine)
+        filer_velocity = (
+            (returns - returns_lag) / returns_lag if returns_lag > 0 else 0.0
+        )
+
+        # Metric C: Household Dependency Ratio (The Consumption Anchor)
+        household_dependency = exemptions / returns if returns > 0 else 0.0
+
+        return {
+            "macro_wealth_cushion": asset_density_ratio,
+            "filer_density_velocity": filer_velocity,
+            "household_dependency_ratio": household_dependency,
+            "spatial_governance_flag": spatial_flag,
+        }
+
+    def compute_labor_and_saturation_profile(
+        self,
+        county_fips: str,
+        loan_vintage_year: int,
+        naics_4d: str,
+        non_msa_strategy: str,
+    ) -> Dict[str, float]:
+        """
+        PRODUCTION VARIANT.
+        Utilizes index-optimized queries for both BLS LAUS and BLS QCEW datasets.
+        Bypasses table scans using explicit tupled pairing filters.
+        """
+        fips_clean = str(county_fips).strip().zfill(5)
+        naics_clean = str(naics_4d).strip().zfill(4)
+        component_fips, spatial_flag = self._get_msa_components(
+            fips_clean, non_msa_strategy
+        )
+
+        target_year = self._calculate_relative_temporal_target(loan_vintage_year)
+        year_start = target_year - 4
+
+        # Build pristine state-county text pairs matching database padding rules
+        geo_pairs = [(f[:2].zfill(2), f[2:].zfill(3)) for f in component_fips]
+
+        # =====================================================================
+        # 1. OPTIMIZED LAUS WORKFORCE PROFILE EXECUTION
+        # =====================================================================
+        conn_laus = sqlite3.connect(self.laus_path)
+        try:
+            if spatial_flag == "RURAL_STATE_AVERAGE":
+                state_prefix = fips_clean[:2]
+                query_laus = """
+                    SELECT value as labor_force 
+                    FROM laus_monthly_records 
+                    WHERE state_fips = ? AND measure_code = '06' AND year BETWEEN ? AND ?
+                """
+                df_laus = pd.read_sql_query(
+                    query_laus,
+                    conn_laus,
+                    params=(state_prefix, year_start, target_year),
+                )
+            else:
+                pair_placeholders = ",".join(["(?, ?)"] * len(geo_pairs))
+                query_laus = f"""
+                    SELECT value as labor_force 
+                    FROM laus_monthly_records 
+                    WHERE (state_fips, county_fips) IN ({pair_placeholders})
+                      AND measure_code = '06' 
+                      AND year BETWEEN ? AND ?
+                """
+                flat_params_laus = []
+                for state, county in geo_pairs:
+                    flat_params_laus.extend([state, county])
+                flat_params_laus.extend([year_start, target_year])
+
+                df_laus = pd.read_sql_query(
+                    query_laus, conn_laus, params=flat_params_laus
+                )
+        finally:
+            conn_laus.close()
+
+        if not df_laus.empty and df_laus["labor_force"].mean() > 0:
+            labor_friction_cv = (
+                df_laus["labor_force"].std() / df_laus["labor_force"].mean()
+            )
+        else:
+            labor_friction_cv = 0.0
+
+        # =====================================================================
+        # 2. OPTIMIZED QCEW INDUSTRY SATURATION EXECUTION
+        # =====================================================================
+        conn_qcew = sqlite3.connect(self.qcew_path)
+        try:
+            # National Baseline Slice (Hits year and own_code indexes)
+            query_nat = """
+                SELECT naics_code, establishment_count
+                FROM qcew_annual_industry_records
+                WHERE own_code = '5' AND year = ?
+            """
+            df_nat_raw = pd.read_sql_query(query_nat, conn_qcew, params=(target_year,))
+
+            # Local Baseline Slice (Hits our brand new idx_qcew_geo_saturation index)
+            if spatial_flag == "RURAL_STATE_AVERAGE":
+                state_prefix = fips_clean[:2] + "%"
+                query_loc = """
+                    SELECT naics_code, establishment_count
+                    FROM qcew_annual_industry_records
+                    WHERE standardized_fips LIKE ? AND own_code = '5' AND year = ?
+                """
+                df_loc_raw = pd.read_sql_query(
+                    query_loc, conn_qcew, params=(state_prefix, target_year)
+                )
+            else:
+                placeholders = ",".join(["?"] * len(component_fips))
+                query_loc = f"""
+                    SELECT naics_code, establishment_count
+                    FROM qcew_annual_industry_records
+                    WHERE standardized_fips IN ({placeholders}) AND own_code = '5' AND year = ?
+                """
+                params_loc = component_fips + [target_year]
+                df_loc_raw = pd.read_sql_query(query_loc, conn_qcew, params=params_loc)
+        finally:
+            conn_qcew.close()
+
+        # =====================================================================
+        # 3. VECTORIZED IN-MEMORY SUBSTRING PROCESSING
+        # =====================================================================
+        if not df_nat_raw.empty:
+            df_nat_raw["naics_4d"] = (
+                df_nat_raw["naics_code"].astype(str).str.strip().str[:4]
+            )
+            nat_sector = df_nat_raw[df_nat_raw["naics_4d"] == naics_clean][
+                "establishment_count"
+            ].sum()
+            nat_total = df_nat_raw["establishment_count"].sum()
+        else:
+            nat_sector, nat_total = 0.0, 1.0
+
+        if not df_loc_raw.empty:
+            df_loc_raw["naics_4d"] = (
+                df_loc_raw["naics_code"].astype(str).str.strip().str[:4]
+            )
+            loc_sector = df_loc_raw[df_loc_raw["naics_4d"] == naics_clean][
+                "establishment_count"
+            ].sum()
+            loc_total = df_loc_raw["establishment_count"].sum()
+        else:
+            loc_sector, loc_total = 0.0, 0.0
+
+        national_share = nat_sector / nat_total if nat_total > 0 else 0.0
+        local_share = loc_sector / loc_total if loc_total > 0 else 0.0
+        industry_market_saturation_lq = (
+            local_share / national_share if national_share > 0 else 0.0
+        )
+
+        return {
+            "labor_pool_structural_friction": float(labor_friction_cv),
+            "industry_market_saturation_lq": float(industry_market_saturation_lq),
+        }
+
+    def compute_advanced_structural_profile(
+        self, county_fips: str, loan_vintage_year: int, non_msa_strategy: str
+    ) -> Dict:
+        """
+        Extracts Advanced Regional Structural Diversification Profiles from QCEW and IRS databases.
+        Provides critical shock absorption metrics for large-ticket municipal and project finance.
+        """
+        if not self.qcew_path.exists() or not self.irs_path.exists():
+            return {}
+
+        fips_clean = str(county_fips).strip().zfill(5)
+        component_fips, spatial_flag = self._get_msa_components(
+            fips_clean, non_msa_strategy
+        )
+        target_year = self._calculate_relative_temporal_target(loan_vintage_year)
+
+        conn_qcew = sqlite3.connect(self.qcew_path)
+        try:
+            if spatial_flag == "RURAL_STATE_AVERAGE":
+                df_w = pd.read_sql_query(
+                    "SELECT total_annual_wages FROM qcew_annual_industry_records WHERE standardized_fips LIKE ? AND own_code = '5' AND year = ? AND naics_code NOT LIKE '%00'",
+                    conn_qcew,
+                    params=(fips_clean[:2] + "%", target_year),
+                )
+            else:
+                placeholders = ",".join(["?"] * len(component_fips))
+                df_w = pd.read_sql_query(
+                    f"SELECT total_annual_wages FROM qcew_annual_industry_records WHERE standardized_fips IN ({placeholders}) AND own_code = '5' AND year = ? AND naics_code NOT LIKE '%00'",
+                    conn_qcew,
+                    params=component_fips + [target_year],
+                )
+        finally:
+            conn_qcew.close()
+
+        if not df_w.empty and df_w["total_annual_wages"].sum() > 0:
+            hhi = (
+                (df_w["total_annual_wages"] / df_w["total_annual_wages"].sum()) ** 2
+            ).sum()
+            wage_diversification = 1.0 - hhi
+        else:
+            wage_diversification = 1.0
+
+        conn_irs = sqlite3.connect(self.irs_path)
+        conn_qcew = sqlite3.connect(self.qcew_path)
+        try:
+            if spatial_flag == "RURAL_STATE_AVERAGE":
+                state_p = fips_clean[:2] + "%"
+                irs_c = pd.read_sql_query(
+                    "SELECT SUM(wages_and_salaries) FROM county_economics WHERE county_fips LIKE ? AND calendar_year = ?",
+                    conn_irs,
+                    params=(state_p, target_year),
+                )
+                bls_c = pd.read_sql_query(
+                    "SELECT SUM(total_annual_wages) FROM qcew_annual_industry_records WHERE standardized_fips LIKE ? AND own_code = '5' AND year = ?",
+                    conn_qcew,
+                    params=(state_p, target_year),
+                )
+                irs_l = pd.read_sql_query(
+                    "SELECT SUM(wages_and_salaries) FROM county_economics WHERE county_fips LIKE ? AND calendar_year = ?",
+                    conn_irs,
+                    params=(state_p, target_year - 5),
+                )
+                bls_l = pd.read_sql_query(
+                    "SELECT SUM(total_annual_wages) FROM qcew_annual_industry_records WHERE standardized_fips LIKE ? AND own_code = '5' AND year = ?",
+                    conn_qcew,
+                    params=(state_p, target_year - 5),
+                )
+            else:
+                placeholders = ",".join(["?"] * len(component_fips))
+                irs_c = pd.read_sql_query(
+                    f"SELECT SUM(wages_and_salaries) FROM county_economics WHERE county_fips IN ({placeholders}) AND calendar_year = ?",
+                    conn_irs,
+                    params=component_fips + [target_year],
+                )
+                bls_c = pd.read_sql_query(
+                    f"SELECT SUM(total_annual_wages) FROM qcew_annual_industry_records WHERE standardized_fips IN ({placeholders}) AND own_code = '5' AND year = ?",
+                    conn_qcew,
+                    params=component_fips + [target_year],
+                )
+                irs_l = pd.read_sql_query(
+                    f"SELECT SUM(wages_and_salaries) FROM county_economics WHERE county_fips IN ({placeholders}) AND calendar_year = ?",
+                    conn_irs,
+                    params=component_fips + [target_year - 5],
+                )
+                bls_l = pd.read_sql_query(
+                    f"SELECT SUM(total_annual_wages) FROM qcew_annual_industry_records WHERE standardized_fips IN ({placeholders}) AND own_code = '5' AND year = ?",
+                    conn_qcew,
+                    params=component_fips + [target_year - 5],
+                )
+        finally:
+            conn_irs.close()
+            conn_qcew.close()
+
+        ic = float(irs_c.iloc) if not irs_c.empty and pd.notna(irs_c.iloc) else 0.0
+        bc = float(bls_c.iloc) if not bls_c.empty and pd.notna(bls_c.iloc) else 0.0
+        il = float(irs_l.iloc) if not irs_l.empty and pd.notna(irs_l.iloc) else ic
+        bl = float(bls_l.iloc) if not bls_l.empty and pd.notna(bls_l.iloc) else bc
+
+        irs_growth = (ic - il) / il if il > 0 else 0.0
+        bls_growth = (bc - bl) / bl if bl > 0 else 0.0
+
+        return {
+            "wage_diversification_index": float(wage_diversification),
+            "wage_to_filer_disconnect_index": irs_growth - bls_growth,
+        }
+
+    def extract_comprehensive_macro_profile(
+        self,
+        county_fips: str,
+        loan_vintage_year: int,
+        naics_4d: Optional[str] = None,
+        non_msa_strategy: str = "COUNTY_ONLY",
+    ) -> Dict[str, Union[float, int, str, None]]:
+        """
+        PURE DATA GENERATOR (MULTI-TIER GEOGRAPHIC ENTRY).
+        Compiles all macro, sovereign, and state shock layers. Automatically detects
+        state-only baseline FIPS strings (ending in '000') and returns None/NaN for
+        county indicators while fully computing state-level systemic parameters.
+        """
+        fips_clean = str(county_fips).strip().zfill(5)
+        naics_clean = str(naics_4d).strip().zfill(4) if naics_4d else "9999"
+
+        # Check if the incoming request is an explicit state-only parameter block
+        is_state_only_query = fips_clean.endswith("000")
+
+        # 1. Gather raw data vectors based on geographic routing logic
+        if is_state_only_query:
+            # Bypass all local granular county DB reads completely
+            p_wealth = {}
+            l_market = {}
+            a_structure = {}
+            spatial_flag = "STATE_LEVEL_CORE"
+        else:
+            # Standard county/metro asset pathway
+            p_wealth = self.compute_passive_wealth_profile(
+                fips_clean, loan_vintage_year, non_msa_strategy
+            )
+            l_market = self.compute_labor_and_saturation_profile(
+                fips_clean, loan_vintage_year, naics_clean, non_msa_strategy
+            )
+            a_structure = self.compute_advanced_structural_profile(
+                fips_clean, loan_vintage_year, non_msa_strategy
+            )
+            spatial_flag = p_wealth.get("spatial_governance_flag", "UNKNOWN")
+
+        # The state/sovereign shock layers can run on either track natively
+        shock_profile = self.compute_sovereign_state_shock_profile(
+            fips_clean, loan_vintage_year
+        )
+
+        # 2. Bundle into a standardized flat parameter payload layout
+        profile_data = {
+            # Metadata identifiers
+            "target_fips": fips_clean,
+            "target_year": loan_vintage_year,
+            "target_naics": naics_clean if naics_4d else "GENERAL",
+            "spatial_governance_flag": spatial_flag,
+            # Dimension 1: Passive Wealth Depth & Migration Profiles (IRS SOI)
+            "macro_wealth_cushion": p_wealth.get("macro_wealth_cushion", None),
+            "filer_density_velocity": p_wealth.get("filer_density_velocity", None),
+            "household_dependency_ratio": p_wealth.get(
+                "household_dependency_ratio", None
+            ),
+            # Dimension 2: Labor Market Dynamics & Friction (BLS LAUS)
+            "labor_pool_structural_friction": l_market.get(
+                "labor_pool_structural_friction", None
+            ),
+            # Dimension 3: Advanced Structure & Disconnect Spreads (BLS QCEW/IRS)
+            "wage_diversification_index": a_structure.get(
+                "wage_diversification_index", None
+            ),
+            "wage_to_filer_disconnect_index": a_structure.get(
+                "wage_to_filer_disconnect_index", None
+            ),
+            # Dimension 4: Systemic Sovereign & State Shock Anchors (FRED / CENSUS QWI)
+            "state_coincident_momentum": shock_profile.get(
+                "state_coincident_momentum", 0.0
+            ),
+            "sovereign_yield_spread": shock_profile.get("sovereign_yield_spread", 0.0),
+            "macro_consumer_sentiment": shock_profile.get(
+                "macro_consumer_sentiment", 0.0
+            ),
+            "state_private_turnover_rate": shock_profile.get(
+                "state_private_turnover_rate", 0.0
+            ),
+            "state_net_job_flow_count": shock_profile.get(
+                "state_net_job_flow_count", 0
+            ),
+        }
+
+        # Only append the industry saturation LQ if requested and we are on the county track
+        if naics_4d:
+            profile_data["industry_market_saturation_lq"] = (
+                l_market.get("industry_market_saturation_lq", None)
+                if not is_state_only_query
+                else None
+            )
+
+        return profile_data
+
+    def generate_county_credit_dashboard(
+        self,
+        county_fips: str,
+        loan_vintage_year: int,
+        naics_4d: str,
+        non_msa_strategy: str = "COUNTY_ONLY",
+    ) -> str:
+        """
+        Generates a publication-grade, scannable Economic Dashboard report in Markdown.
+        Ideal for consulting deliverables and formal loan credit committee files.
+        """
+        fips_clean = str(county_fips).strip().zfill(5)
+        naics_clean = str(naics_4d).strip().zfill(4)
+
+        # 1. Fetch data across all three corporate dimensions instantly
+        p_wealth = self.compute_passive_wealth_profile(
+            fips_clean, loan_vintage_year, non_msa_strategy
+        )
+        l_market = self.compute_labor_and_saturation_profile(
+            fips_clean, loan_vintage_year, naics_clean, non_msa_strategy
+        )
+        a_structure = self.compute_advanced_structural_profile(
+            fips_clean, loan_vintage_year, non_msa_strategy
+        )
+
+        # 2. Extract structural variables safely
+        adr = p_wealth.get("macro_wealth_cushion", 0.0)
+        velocity = p_wealth.get("filer_density_velocity", 0.0)
+        hdr = p_wealth.get("household_dependency_ratio", 0.0)
+        flag = p_wealth.get("spatial_governance_flag", "UNKNOWN")
+
+        cv = l_market.get("labor_pool_structural_friction", 0.0)
+        lq = l_market.get("industry_market_saturation_lq", 0.0)
+
+        hhi = a_structure.get("wage_diversification_index", 0.0)
+        disconnect = a_structure.get("wage_to_filer_disconnect_index", 0.0)
+
+        # 3. Resolve dynamic underwriting tier definitions based on risk parameters
+        cushion_tier = (
+            "Tier 1: High Insulation"
+            if adr > 0.15
+            else ("Tier 2: Balanced" if adr > 0.05 else "Tier 3: Vulnerable")
+        )
+        labor_tier = (
+            "Stable / Low Risk"
+            if cv < 0.25
+            else (
+                "Moderate Volatility"
+                if cv < 0.75
+                else "Hyper-Volatile / Structural Friction"
+            )
+        )
+        sat_tier = (
+            "Under-served (Favorable Pricing Power)"
+            if lq < 0.8
+            else (
+                "Balanced Market"
+                if lq <= 1.5
+                else "Saturated Market (Enhanced Due Diligence Required)"
+            )
+        )
+        div_tier = (
+            "Highly Diversified / Resilient"
+            if hhi > 0.85
+            else (
+                "Moderately Diversified"
+                if hhi > 0.50
+                else "Concentrated / Single-Industry Vulnerability"
+            )
+        )
+
+        profile_desc = (
+            "Mature Corporate Hub (Local payrolls matching residential wealth)"
+            if abs(disconnect) <= 0.02
+            else (
+                "Commuter Bedroom Community (Importing massive wealth from adjacent centers)"
+                if disconnect > 0.02
+                else "Industrial Production Hub (Exporting wages; leaking resident wealth)"
+            )
+        )
+
+        # 4. Construct the visual markdown reporting canvas
+        dashboard_md = f"""# 📊 HYPERLOCAL MACROECONOMIC INTELLIGENCE REPORT
+**Target Jurisdiction FIPS:** `{fips_clean}` | **Analysis Vintage Year:** `{loan_vintage_year}` | **Target Industry NAICS:** `{naics_clean}`
+**Spatial Routing Governance Mode:** `{flag}`
+---
+
+## 💎 1. PASSIVE WEALTH DEPTH & MIGRATION PROFILE
+Measures long-term regional consumer liquidity, demographic growth vectors, and household spending flexibility.
+
+* **Asset Density Ratio (ADR / Wealth Cushion):** `{adr:.4f}`
+  * *Policy Underwriting Class:* **{cushion_tier}**
+  * *Context:* Measures the concentration of investment interest and dividend income relative to active wages. Higher values signal a market insulated from immediate employment shocks.
+* **Filer Density Velocity (5-Yr Migration Metric):** `{velocity * 100:.2f}%`
+  * *Context:* Captures net taxpayer migration. A positive percentage represents an expanding local tax and business revenue footprint.
+* **Household Dependency Ratio (HDR / Consumption Anchor):** `{hdr:.2f}`
+  * *Context:* Quantifies average family dependency loads. High values squeeze localized disposable income flexibility during down-cycles.
+
+---
+
+## 💼 2. LABOR POOL DYNAMICS & INDUSTRY CONCENTRATION
+Evaluates workforce operational stability and competitive overcrowding risks within the local economy.
+
+* **Labor Pool Structural Friction (5-Yr Rolling CV):** `{cv:.4f}`
+  * *Policy Risk Assessment:* **{labor_tier}**
+  * *Context:* Population-agnostic volatility index checking multi-year monthly labor pool counts. Values above 0.50 indicate workforce migration strains or deep seasonal labor dependencies.
+* **Industry Market Saturation LQ (Location Quotient):** `{lq:.4f}`
+  * *Underwriting Recommendation:* **{sat_tier}**
+  * *Context:* Establishes sector density relative to national benchmarks. Values > 1.5 signal intensive competitive overcrowding, margin compression, and elevated borrower market-share risk.
+
+---
+
+## 🧬 3. ADVANCED STRUCTURAL DISCONNECT & RESILIENCE
+Exposes systemic structural profiles and payroll diversification depths to gauge market shock absorption.
+
+* **Local Industry Wage Diversification Index (Normalized HHI Proxy):** `{hhi:.4f}`
+  * *Structural Health Tier:* **{div_tier}**
+  * *Context:* Measures payroll concentration across all local private sectors. High scores block "one-company town" contagion default waves if a dominant regional business fails.
+* **The Wage-to-Filer Disconnect Index:** `{disconnect:+.4f}`
+  * *Derived Regional Archetype:* **{profile_desc}**
+  * *Context:* The long-term tracking spread between where people live vs. where they work. A widening gap maps shifting commuter patterns, corporate campus clusters, and regional wealth leakage.
+
+---
+## 📋 4. INSTITUTIONAL CREDIT POLICY VERDICT
+* **Macro Risk Mitigator:** If the **Wage Diversification Index** exceeds `0.90` and the **ADR** is above `0.10`, credit models can expand loan maturity boundaries by up to 12 months.
+* **Mandatory Review Trigger:** An **Industry Saturation LQ** greater than `1.50` combined with a **Labor Friction CV** above `0.50` triggers an automatic escalation for manual credit review, overriding automated pricing approvals.
+
+*Report Generated Cleanly from Data Warehouse Infrastructure.*
+"""
+        return dashboard_md
+
+    def generate_general_county_dashboard(
+        self,
+        county_fips: str,
+        loan_vintage_year: int,
+        non_msa_strategy: str = "COUNTY_ONLY",
+    ) -> str:
+        """
+        Generates a general-purpose, publication-grade Macroeconomic Dashboard in Markdown.
+        Decoupled from specific NAICS codes to evaluate overall regional economic health,
+        tax base resilience, commuter dynamics, and foundational credit safety nets.
+        """
+        fips_clean = str(county_fips).strip().zfill(5)
+
+        # 1. Fetch our general geographic and structural profiles
+        p_wealth = self.compute_passive_wealth_profile(
+            fips_clean, loan_vintage_year, non_msa_strategy
+        )
+        a_structure = self.compute_advanced_structural_profile(
+            fips_clean, loan_vintage_year, non_msa_strategy
+        )
+
+        # 2. Extract general labor volatility via a dummy NAICS code
+        # (Since LAUS metrics are strictly geographic, passing any NAICS string returns the same labor force CV)
+        l_market = self.compute_labor_and_saturation_profile(
+            fips_clean, loan_vintage_year, "9999", non_msa_strategy
+        )
+
+        # 3. Resolve macro variables safely
+        adr = p_wealth.get("macro_wealth_cushion", 0.0)
+        velocity = p_wealth.get("filer_density_velocity", 0.0)
+        hdr = p_wealth.get("household_dependency_ratio", 0.0)
+        flag = p_wealth.get("spatial_governance_flag", "UNKNOWN")
+
+        cv = l_market.get("labor_pool_structural_friction", 0.0)
+        hhi = a_structure.get("wage_diversification_index", 0.0)
+        disconnect = a_structure.get("wage_to_filer_disconnect_index", 0.0)
+
+        # 4. Resolve Qualitative Policy Tiers and Macro Profiles
+        cushion_tier = (
+            "Tier 1: Deep Asset Insulation"
+            if adr > 0.15
+            else (
+                "Tier 2: Balanced Capital Structure"
+                if adr > 0.05
+                else "Tier 3: Vulnerable / Paycheck-Dependent"
+            )
+        )
+        labor_tier = (
+            "Hyper-Stable / Resilient Workforce"
+            if cv < 0.25
+            else (
+                "Moderate Cyclical/Seasonal Volatility"
+                if cv < 0.75
+                else "Severe Labor Friction / Shifting Base"
+            )
+        )
+        div_tier = (
+            "Highly Diversified Economy (High Shock Absorption)"
+            if hhi > 0.85
+            else (
+                "Moderately Diversified Economy"
+                if hhi > 0.50
+                else "Concentrated Market / High One-Industry Exposure"
+            )
+        )
+
+        profile_desc = (
+            "Balanced Corporate Hub (Local job creation matches residential expansion)"
+            if abs(disconnect) <= 0.02
+            else (
+                "Commuter Bedroom Suburb (Rapid residential growth; importing massive external wealth)"
+                if disconnect > 0.02
+                else "Industrial/Production Hub (Major regional wage exporter; lagging local consumer wealth retention)"
+            )
+        )
+
+        # 5. Build the clean, general reporting layout
+        dashboard_md = f"""# 🏛️ GENERAL COUNTY ECONOMIC INTELLIGENCE PROFILE
+**Target Jurisdiction FIPS:** `{fips_clean}` | **Analysis Reference Year:** `{loan_vintage_year}`
+**Spatial Aggregation Mode:** `{flag}`
+---
+
+## 💰 1. PASSIVE WEALTH DEPTH & REGIONAL CASH CUSHION
+Measures the depth of non-wage asset distributions, population migration velocity, and consumer disposable income flexibility.
+
+* **Asset Density Ratio (ADR):** `{adr:.4f}`
+  * *Economic Safety Class:* **{cushion_tier}**
+  * *Insight:* Captures the depth of local dividend and interest cash flows relative to active W-2 wage dependency. High ratios signal a wealthy regional safety net capable of anchoring local business retail demand through broader recessions.
+* **Tax Filer Velocity (5-Year Net Population Shift):** `{velocity * 100:+.2f}%`
+  * *Insight:* Tracks long-term net taxpayer migration. An expanding percentage signals an inflow of economic capital and property tax foundation growth.
+* **Household Dependency Ratio (HDR):** `{hdr:.2f}`
+  * *Insight:* Reflects the average family dependent load per filer. High dependency locks up local consumer spending power, leaving households sensitive to localized wage inflation or employment disruptions.
+
+---
+
+## 💼 2. WORKFORCE STABILITY & STRUCTURAL FRICTION
+Measures the long-term volatility of the local labor footprint to assess operational risk and systemic vulnerability.
+
+* **Labor Pool Structural Friction (5-Yr Rolling CV):** `{cv:.4f}`
+  * *Workforce Stability Class:* **{labor_tier}**
+  * *Insight:* A population-agnostic volatility metric calculated from multi-year monthly labor counts. High values highlight severe workforce seasonal dependency, cyclical layoffs, or workforce attrition strains.
+
+---
+
+## 🧬 3. MACRO STRUCTURAL ARCHETYPE & DIVERSIFICATION
+Exposes payroll diversification safety nets and structural growth disconnects to classify the region's overall economic identity.
+
+* **Local Industry Wage Diversification Index (HHI Proxy):** `{hhi:.4f}`
+  * *Regional Diversification Class:* **{div_tier}**
+  * *Insight:* Evaluates private payroll concentration across all active sectors. Broad diversification prevents localized business defaults from cascading into regional economic failures.
+* **The Wage-to-Filer Disconnect Index:** `{disconnect:+.4f}`
+  * *Identified Regional Economic Archetype:* **{profile_desc}**
+  * *Insight:* The long-term growth spread between where people live (IRS) versus where they work (BLS). A positive spread marks an emerging bedroom wealth-importer, while a negative spread points to an industrial employment engine that leaks resident capital.
+
+---
+## 📝 4. REGIONAL DEVELOPMENT & GOVERNANCE SUMMARY
+* **Resilience Score:** Combined **ADR** and **Wage Diversification** suggest this market is highly insulated against targeted macroeconomic down-cycles.
+* **Strategic Growth Recommendation:** If this profile displays a **Commuter Bedroom Suburb** archetype with high diversification, local economic development initiatives (like Texas 4A/4B sales tax programs) should prioritize commercial retail, infrastructure matching, and service-sector real estate attraction to fully retain imported resident capital within the municipal tax boundary.
+
+*Report Compiled Cleanly from Consolidated Data Warehouse Ingestion Layers.*
+"""
+        return dashboard_md
