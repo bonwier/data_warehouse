@@ -1,6 +1,14 @@
 # =====================================================================
 # utils/macro_feature_engine.py (PART 1 OF 2)
 # =====================================================================
+
+
+########################################## IMPORTANT NOTICE ##########################################################
+# THIS MODULE AND CLASS ARE DEPRECATED.  USE THE MacroFeatureEngineV2 CLASS from utils.macro_feature_engine_v2 INSTEAD.
+# THIS FILE IS RETAINED FOR LEGACY REFERENCE ONLY.
+#####################################################################################################################
+
+
 import sqlite3
 import numpy as np
 import pandas as pd
