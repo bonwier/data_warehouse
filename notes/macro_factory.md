@@ -43,7 +43,7 @@ The MacroFeatureEngineV2 class is a pure data calculator designed to ingest clea
 
 <p style="text-align: center;">\(\text{CV}=\frac{\sigma (\text{Monthly\ Labor\ Force\ Counts}_{[t-4,t]})}{\mu (\text{Monthly\ Labor\ Force\ Counts}_{[t-4,t]})}\)</p><br><br>
 
-- **Interpretation:** A 5-year rolling, population-agnostic Coefficient of Variation mapping monthly workforce size stability. Because it divides standard deviation by the mean, it normalizes volatility across rural towns and large cities, creating a clean index to map seasonal labor disruptions and workforce migration.<br><br>
+- **Interpretation: A 5-year rolling, population-agnostic Coefficient of Variation mapping monthly workforce size stability. Because it divides standard deviation by the mean, it normalizes volatility across rural towns and large cities, creating a clean index to map seasonal labor disruptions and workforce migration.<br><br>
 
 - **Credit/Consulting Utility:** Scores \(<0.20\) reflect highly stable, predictable labor markets. Spikes \(>0.75\) indicate intense structural churn, seasonal resource dependency (e.g., agricultural/tourism), or rapid post-pandemic workforce reshuffling, raising operating cost risks for projects requiring stable talent acquisition.<br><br>
 
