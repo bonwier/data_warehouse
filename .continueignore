@@ -1,0 +1,18 @@
+# Ignore python virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# Ignore raw data files and databases
+*.csv
+*.xlsx
+*.xls
+*.sqlite
+*.db
+*.pkl
+*.json
+
+# Ignore system/git junk
+.git/
+.DS_Store
