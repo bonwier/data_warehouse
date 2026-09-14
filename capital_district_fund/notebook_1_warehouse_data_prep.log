@@ -1,0 +1,67 @@
+2026-07-03 17:10:04,210 | INFO | 2179565733.py:29 | Data warehouse root anchor verified at: /Users/bonwier/PythonProjects/data_warehouse
+2026-07-03 17:10:04,211 | INFO | 2179565733.py:34 | Root directory successfully inserted into sys.path for local utilities.
+2026-07-03 17:11:06,931 | INFO | 3170789527.py:12 | --- Warehouse Structural Hyperparameters Loaded ---
+2026-07-03 17:11:06,933 | INFO | 3170789527.py:13 | Explicit Right-Censoring Horizon (WINDOW_MONTHS): 60 months
+2026-07-03 17:11:06,934 | INFO | 3170789527.py:14 | Asset Class Duration Partition (TERM_SPLIT_MONTHS): 59 months
+2026-07-03 17:12:06,321 | INFO | 2033916693.py:19 | Target industry boundary locked. Vectorized 8 sectors.
+2026-07-03 17:12:48,871 | INFO | 764957485.py:15 | Established optimized WAL connection to master analytical warehouse at: sba_7a_analysis.db
+2026-07-03 17:13:27,937 | INFO | 3483807849.py:10 | Targeting indexed parent sector macro regions in warehouse: ['111', '115', '212', '221', '238', '311', '312']
+2026-07-03 17:13:32,226 | INFO | 3483807849.py:46 | 🎉 Success! High-velocity parent extraction complete.
+2026-07-03 17:13:32,230 | INFO | 3483807849.py:47 |  • In-Memory Dataset Footprint: 106,595 loans successfully pulled.
+2026-07-03 17:13:50,464 | INFO | 1226642643.py:7 | --- Portfolio Temporal Profile Audit ---
+2026-07-03 17:13:50,466 | INFO | 1226642643.py:10 |  • Column 'approvaldate': 0 missing/unparseable values.
+2026-07-03 17:13:50,467 | INFO | 1226642643.py:10 |  • Column 'firstdisbursementdate': 0 missing/unparseable values.
+2026-07-03 17:13:50,468 | INFO | 1226642643.py:10 |  • Column 'paidinfulldate': 36,600 missing/unparseable values.
+2026-07-03 17:13:50,469 | INFO | 1226642643.py:10 |  • Column 'chargeoffdate': 94,560 missing/unparseable values.
+2026-07-03 17:13:50,473 | INFO | 1226642643.py:16 | Pristine chronological envelope spanning from 2002-10-02 to 2026-03-10.
+2026-07-03 17:14:02,813 | INFO | 1896472250.py:26 | --- Baseline Survival Metric Generation Complete ---
+2026-07-03 17:14:02,832 | INFO | 1896472250.py:33 |  • Total Portfolio Profile: 106,595 loans analyzed.
+2026-07-03 17:14:02,833 | INFO | 1896472250.py:34 |  • Default Events Observed (Event=1): 7,823 (7.34%)
+2026-07-03 17:14:02,833 | INFO | 1896472250.py:35 |  • Right-Censored Profiles (Event=0): 98,772 (92.66%)
+2026-07-03 17:14:02,835 | INFO | 1896472250.py:36 |  • Revised PIF Mismatch Remediation: 1,473 recovery anomalies forced to Event=1.
+2026-07-03 17:14:43,029 | INFO | 1350811575.py:18 | --- Portfolio Term Structure Risk Segmentation Matrix ---
+2026-07-03 17:14:43,033 | INFO | 1350811575.py:19 | 
+          Short-Term (<60mo)  Long-Term (>=60mo)  Short-Term Defaults  Long-Term Defaults
+naics_4d                                                                                 
+1111                      57                 295                    2                   5
+1112                      26                 145                    7                   6
+1113                      26                 212                    0                   4
+1114                      67                 606                   16                  14
+1119                      64                 383                    6                   0
+1151                     153                 880                   16                  12
+1152                      93                 768                   27                  12
+1153                      48                 296                   10                   5
+2121                       7                  21                    2                   0
+2122                       4                  22                    1                   0
+2123                      94                 600                   26                  23
+2211                      43                 282                    8                  14
+2212                      15                  93                    4                   0
+2213                     100                 604                   38                  15
+2381                    2261               12628                  792                 447
+2382                    4106               24517                 1262                 710
+2383                    2966               15248                 1190                 709
+2389                    3289               19238                 1033                 548
+3111                      58                 391                    7                  10
+3112                      21                 138                    5                   2
+3113                      78                 543                   23                  25
+3114                      85                 599                   27                  22
+3115                      78                 657                   14                  21
+3116                      69                 634                   13                   9
+3117                      49                 111                   10                   4
+3118                     511                4264                  173                 147
+3119                     308                2503                  103                  98
+3121                     346                4862                   70                  71
+3122                       8                  25                    5                   0
+2026-07-03 17:15:17,470 | INFO | 1291818327.py:50 | Warehouse-horizon Kaplan-Meier survival engine compiled successfully.
+2026-07-03 17:15:40,771 | INFO | 4205197735.py:7 | --- Beginning In-Memory Kaplan-Meier Profile Compilation with Parent Backfills ---
+2026-07-03 17:15:41,106 | INFO | 4205197735.py:85 | Curve Matrix compiled successfully. Shape: (16, 5)
+2026-07-03 17:16:10,437 | INFO | 3134125166.py:24 | Pass: Cumulative curves verified as perfectly monotonic across all 5 annual tracking marks.
+2026-07-03 17:16:49,300 | INFO | 833096339.py:5 | Compiling raw industry risk leaderboards directly from compiled vectors...
+2026-07-03 17:16:49,308 | INFO | 833096339.py:27 | Baseline profile leaderboard successfully established. Premature linkages bypassed.
+2026-07-03 17:18:59,939 | INFO | 3934332221.py:7 | Extracting pristine baseline 5-year default rates from curve matrices...
+2026-07-03 17:18:59,944 | INFO | 3934332221.py:22 | Universal global JSON reference handshake complete.
+2026-07-03 17:19:02,099 | INFO | 3934332221.py:7 | Extracting pristine baseline 5-year default rates from curve matrices...
+2026-07-03 17:19:02,104 | INFO | 3934332221.py:22 | Universal global JSON reference handshake complete.
+2026-07-03 17:23:18,908 | INFO | 1765765885.py:9 | Initializing project-neutral data layer serialization pipeline...
+2026-07-03 17:23:19,190 | INFO | 1765765885.py:49 | Writing un-biased micro-data and audit logs to: /Users/bonwier/PythonProjects/data_warehouse/databases/transitory/capital_district_collateral_bridge.db
+2026-07-03 17:23:20,217 | INFO | 1765765885.py:72 | 🎉 Database serialization complete. Both tables written cleanly with structural proxy tracking.

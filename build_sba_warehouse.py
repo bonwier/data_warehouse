@@ -1,10 +1,3 @@
-"""
-Location: build_sba_warehouse.py (Part 1 of 2)
-Description: Streamlined warehouse script that constructs a project-neutral,
-             two-tiered architecture: a complete raw history table and a
-             pristine, un-censored survival cohort table for 2003-present.
-"""
-
 import sqlite3
 import sys
 import os
